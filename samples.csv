@@ -1,0 +1,9 @@
+sample,experiment,independent_var,experiment_type
+Ribo_RP3_CHX_mock,RP3,mock,riboseq
+Ribo_RP3_CHX_12hpi,RP3,12hpi,riboseq
+Ribo_RP9_CHX_mock,RP9,mock,riboseq
+Ribo_RP9_CHX_12hpi,RP9,12hpi,riboseq
+Rseq_RP3_CHX_mock,RP3,mock,rnaseq
+Rseq_RP3_CHX_12hpi,RP3,12hpi,rnaseq
+Rseq_RP9_CHX_mock,RP9,mock,rnaseq
+Rseq_RP9_CHX_12hpi,RP9,12hpi,rnaseq
