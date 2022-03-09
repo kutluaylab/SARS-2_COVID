@@ -1,0 +1,163 @@
+## This document serves to guide the readers through data analysis for ribosome profiling done in “The translational landscape of SARS-CoV-2 and infected cells reveals suppression of innate immune genes (Puray-Chavez et.al)”. 
+
+
+ 
+#######################################################
+Profiling of translation in SARS-CoV-2 infected cells
+#######################################################
+ 
+ 
+Analysis for ribosome profiling data can be divided in largely three steps:
+1. Alignment 2. Quality Assessment and 3. Statistical Analysis
+ 
+Each stage consists of smaller steps that may require running of custom scripts. All necessary scripts for generating plots and tables for the reference paper can be found in this repository. 
+ 
+ 
+ 
+===============
+ 1. Alignments
+===============
+ 
+1.1 Ribo-seq
+ 
+A software tool, BBDuk (Bushnell, n.d.), was used to pre-process the raw Ribo-seq data. This step includes filtering low quality reads (default BBDuk setting), trimming adapter sequences, and splitting by barcodes. 
+ 
+ 
+>> ./bbduk_run_rp.sh
+ 
+ 
+Running the above script will result in separate fastq files for every sample. These are then aligned to respective genomic reference files (homo sapiens or vero). Genomic index files are also required for alignment software used for this analysis. Both scripts for alignment include extra steps after the mapping to organize output files. 
+ 
+ 
+>> ./align_hgenome_star.sh
+ 
+ 
+Alignment to African green monkey or human genome uses STAR (Dobin et al., 2013). The script needs to be properly edited with directories to ribosome index, genome index, fastq files, genomic annotation, and an output directory to save the results. The mapped and sorted bam files from STAR were then used to quantify the reads for each gene. This step utilized featureCounts (Liao et al., 2014) and a custom script <reduce_fc.py> to trim the counts file.
+ 
+ 
+>> ./align_vgenome_par.sh
+ 
+ 
+For viral alignment, bowtie (Langmead et al., 2009) was used. Similarly to the previous one, the script for viral alignment requires correct paths to genome index and fastq files, as well as an output directory. Bowtie outputs the result in .sam format. These files are converted to bam format, sorted and indexed with samtools (Li et al., 2009). To extract coverage information, samtools is used again with mpileup option. The summary files from this command are then passed on to custom scripts <pileup_To_counts.py> and <repair_counts.pl> to generate counts data. 
+ 
+ 
+ 
+1.2. RNAseq
+ 
+Unlike Ribo-seq, RNAseq raw data did not require pre-processing with tools such as BBDuk. Same scripts were used as Ribo-seq data processing, with appropriate arguments. 
+ 
+ 
+>> ./align_hgenome_star.sh
+ 
+>> ./align_vgenome_par.sh
+ 
+ 
+ 
+=======================
+ 2. Quality Assessment
+=======================
+ 
+2.1. PCA 
+ 
+Prior to performing PCA, the Ribo-seq and RNA-seq count data were normalized based on library sizes. Prcomp() function from the R's built in 'stats' package was used to extract principal component information, which were used to generate the plots in supplementary figures. Our manual script asks for counts data from previous steps as inputs.
+ 
+ 
+2.2. Read Length Distribution (RLD) 
+ 
+Distribution of read lengths were found using samtools. BAM(SAM) files for transcriptome region were obtained when running the STAR to align sequencing data, with "--quantMode TranscriptomeSAM" argument. The output file is consisted of two columns: 1) lengths of reads and 2) the corresponding occurrence of each read lengths. 
+
+ 
+>> samtools view -F 4 transcriptome.bam | cut -f 10 | perl -ne 'chomp;print length($_) . "\n"'| sort | uniq -c | tee reads_distribution.output
+
+* Viral sorted BAM files were used to generate viral read length distributions. 
+
+ 
+2.3. Viral density plot
+ 
+Using the viral counts information obtained in previous step (viral alignment), the density of viral composition was plotted. The script takes the repaired counts file and genomic annotation file (typically .gtf or .gff) as inputs. 
+ 
+
+2.4. Genomic Regions
+ 
+Separate annotation files were built based on identification of genomic regions (5' and 3' UTRs, CDS). Then featureCount was used to quantify the read counts for each region. The output was saved in a table format. (See <ribo_profiling.Rmd> for building the annotation files)
+
+ 
+ 
+=========================
+ 3. Statistical Analysis 
+=========================
+ 
+Downstream analyses were performed with the information extracted from sequencing data. This step involves various means of statistical interpretation of the data, including normalization, comparisons between samples, and visualization. Details on each type of analysis can be found in the original manuscript. This document will provide brief explanations on the purpose and running of each script available in the repository.  
+ 
+ 
+3.1. Differential Expression Analysis
+ 
+DE analysis was performed primarily with 'edgeR' package in R (Robinson et al., 2010). Running the script <DE_analysis.R> generated plots such as BCV plots, heatmaps, and volcano plots, as well as a comprehensive table of all differentially expressed genes and their P-values, false discovery rate, and fold-changes.  
+ 
+ 
+3.2. Ribosome Profiling 
+ 
+In the script <ribo_profiling.Rmd>, a package called 'RiboWaltz' (Lauria et al., 2018) was utilized for P-site analysis. This step requires transcriptome bam file. 
+
+Another software named 'Ribo-TISH' (Zhang et al., 2017) was used to find information on TIS sites. Parameters used for the purpose of the original manuscript were as following: sorted BAM files and corresponding GTF annotations (quality function), viral BAM file*, and threshold 0.4 (--th 0.4). Details on running Ribo-TISH can be found in their source code page (https://github.com/zhpn1024/ribotish).
+
+* The viral BAM file was created from merging mapped reads across all timepoints from all four HBEC experiments.
+
+ 
+3.4. Time Course Expression & Clustering 
+ 
+A time course heatmap with clustering information was plotted using the counts files produced with featureCount and a list of DE genes generated from running exact test from the edgeR R package. For forming the clusters, R packages named 'ConsensusClusterPlus'(Wilkerson and Hayes, 2010)  was used. Each cluster's profile was separately plotted as well.
+ 
+The scripts were initially run with fixed number of 12 clusters. Some clusters were combined together based on the heatmap and cluster profiles generated as their pattern and numerical values showed high similarities. For ConsensusClusterPlus package, Pearson distancing was used with hierarchical clustering. Other parameter values can be checked in the above script.
+ 
+*NOTE* Process involved in this step is heavily customized. Clustering algorithm has a random aspect; cluster selection and merging were all performed manually. For the original clustering information used in the manuscript, please refer to the supplementary tables section. 
+
+ 
+3.5. Enrichment 
+ 
+GO analysis was run and plotted into a dotted heatmap. Each column represents the clusters identified in the Time Course Expression & Clustering step. 'enricher' function from 'ClusterProfiler' package (Yu et al., 2012) was used.
+ 
+ 
+3.6. TE Plots
+
+Translational efficiencies are calculated by taking the ratio of Ribo-seq expression data and RNA-seq expression data. Normalizing of these expression data includes taking log of the counts-per-million. Therefore the ratio is calculated by subtracting logCPM(RNAseq) from logCPM(Riboseq).
+
+Two different scripts were used to make TE plots: <plot_dTE.R> plotted the figures shown in the main manuscript, and <plot_te.R> generated the TE plots in supplementary figures. Note that logCPM values used in <plot_te.R> are the averaged logCPM of the samples, obtained by running the exact test within the edgeR package.
+
+
+
+=============
+ References 
+=============
+
+
+BBDuk 
+Bushnell, B. (n.d.). BBMap. JGI. https://sourceforge.net/projects/bbmap/
+
+STAR 
+Dobin, A., Davis, C. A., Schlesinger, F., Drenkow, J., Zaleski, C., Jha, S., Batut, P., Chaisson, M., & Gingeras, T. R. (2013). STAR: ultrafast universal RNA-seq aligner. Bioinformatics (Oxford, England), 29(1), 15–21. https://doi.org/10.1093/bioinformatics/bts635 
+
+featureCounts 
+Yang Liao, Gordon K. Smyth, Wei Shi, featureCounts: an efficient general purpose program for assigning sequence reads to genomic features, Bioinformatics, Volume 30, Issue 7, 1 April 2014, Pages 923–930, https://doi.org/10.1093/bioinformatics/btt656 
+
+Bowtie
+Langmead, B., Trapnell, C., Pop, M. et al. Ultrafast and memory-efficient alignment of short DNA sequences to the human genome. Genome Biol 10, R25 (2009). https://doi.org/10.1186/gb-2009-10-3-r25 
+
+samtools
+Li, H., Handsaker, B., Wysoker, A., Fennell, T., Ruan, J., Homer, N., Marth, G., Abecasis, G., Durbin, R., & 1000 Genome Project Data Processing Subgroup (2009). The Sequence Alignment/Map format and SAMtools. Bioinformatics (Oxford, England), 25(16), 2078–2079. https://doi.org/10.1093/bioinformatics/btp352 
+
+edgeR (https://academic.oup.com/bioinformatics/article/26/1/139/182458)
+Robinson, M. D., McCarthy, D. J., & Smyth, G. K. (2010). edgeR: a Bioconductor package for differential expression analysis of digital gene expression data. Bioinformatics (Oxford, England), 26(1), 139–140. https://doi.org/10.1093/bioinformatics/btp616 
+
+RiboWaltz
+Lauria F, Tebaldi T, Bernabò P, Groen EJN, Gillingwater TH, Viero G (2018) riboWaltz: Optimization of ribosome P-site positioning in ribosome profiling data. PLoS Comput Biol 14(8): e1006169. https://doi.org/10.1371/journal.pcbi.1006169 
+
+Ribo-TISH (https://www.nature.com/articles/s41467-017-01981-8)
+Zhang, P., He, D., Xu, Y. et al. Genome-wide identification and differential analysis of translational initiation. Nat Commun 8, 1749 (2017). https://doi.org/10.1038/s41467-017-01981-8 
+
+ConsensusClusteringPlus
+Matthew D. Wilkerson, D. Neil Hayes, ConsensusClusterPlus: a class discovery tool with confidence assessments and item tracking, Bioinformatics, Volume 26, Issue 12, 15 June 2010, Pages 1572–1573, https://doi.org/10.1093/bioinformatics/btq170 
+
+ClusterProfiler
+Guangchuang Yu, Li-Gen Wang, Yanyan Han, and Qing-Yu He. clusterProfiler: an R Package for Comparing Biological Themes Among Gene Clusters. OMICS: A Journal of Integrative Biology. May 2012. 284-287. http://doi.org/10.1089/omi.2011.0118
+

@@ -1,0 +1,184 @@
+---
+title: "Ribosome profiling analysis pipeline"
+author: "Yating Liu"
+date: "9/9/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/path/to/root/directory")
+library(tidyverse)
+library(edgeR)
+library(biomaRt)
+library(gridExtra)
+library(genefilter)
+save_figs <- F
+options(stringsAsFactors = FALSE)
+source("/path/to/ribo_profiling_functions.R")
+```
+
+## Specify the relative output directory and create necessary folders
+```{r}
+## global variable: relative path of the output folder 
+OUTPUT <- "exp1_results"
+## global variable: group of samples 
+SAMPLES <- c("RP3_mock", "RP9_mock", "RP3_12hpi", "RP9_12hpi")
+make_output_directories(OUTPUT)
+## check dependency: need a samples.csv file to describe replicates, treatements and etc for each sample in the current root dir
+if (!file.exists("samples.csv")) {
+  stop("samples.csv doesn't exist!")
+}
+```
+
+## make DGE objects from Ribo-seq and RNA-seq gene counts
+
+> Use htseq-count to count CDS and copy the results folder into OUTPUT, name the folder as htseq_count_cds
+```{r}
+if (!dir.exists(file.path(OUTPUT, "htseq_count_cds"))) {
+  stop("HTseq-count results for CDS doesn't exist!")
+}
+# Make DGE object for all samples
+make_dge(file.path(OUTPUT, "htseq_count_cds"), "", region = "cds")
+```
+
+## QC
+
+### reproducibility
+```{r}
+all_cpm <- read_csv(file.path(OUTPUT, "reports","cpm_cds.csv"))
+generate_reprod_plot(all_cpm, "riboseq")
+generate_reprod_plot(all_cpm, "rnaseq")
+```
+
+### MDS
+
+```{r}
+dge_all <- readRDS(file.path(OUTPUT, "objs", "dge_cds_protein_coding.rds"))
+generate_mds(dge_all, "riboseq")
+generate_mds(dge_all, "rnaseq")
+```
+
+## find the threshold to cut the low expressed genes
+```{r}
+require(genefilter)
+replications <- list(c("RP3_mock", "RP9_mock"), c("RP3_12hpi", "RP9_12hpi"))
+plot_CV_vs_CPM(all_cpm, replications, "rnaseq")
+plot_CV_vs_CPM(all_cpm, replications, "riboseq")
+```
+
+### reproducibility after filter
+Use the CV vs CPM plots to find the filter threshold:
+log2 cpm > 2
+# adjust threshold and numRep
+```{r}
+filter_dge(dge_all,"cds", 2, 2)
+dge_all_filt <- readRDS("exp1_results/objs/dge_cds_filt_norm.rds")
+all_cpm_filt <- read_csv("exp1_results/reports/cpm_cds_filt.csv")
+generate_reprod_plot(all_cpm_filt, "rnaseq")
+generate_reprod_plot(all_cpm_filt, "riboseq")
+```
+
+#### Generate cds GTF, utr3 GTF and utr5 GTF 
+
+```{r, eval=F}
+ensembl = useMart(biomart = "ENSEMBL_MART_ENSEMBL", version = "Ensembl Genes 90", dataset = "csabaeus_gene_ensembl", host = "http://aug2017.archive.ensembl.org")
+filtered_genes_ens <- getBM(attributes=c('ensembl_gene_id','ensembl_transcript_id', 'chromosome_name', 'strand', 'external_gene_name', '5_utr_start', '5_utr_end', '3_utr_start', '3_utr_end', 'genomic_coding_start', 'genomic_coding_end'),
+                 filters = 'ensembl_gene_id', values = all_cpm_filt$ensembl_gene_id, mart = ensembl)
+cds_regions <- filtered_genes_ens %>% 
+  filter(!is.na(genomic_coding_start) & !is.na(genomic_coding_end)) %>% 
+  transmute(chr = chromosome_name, source="protein_coding", method="CDS", start=genomic_coding_start, end=genomic_coding_end, score=".", 
+            strand=case_when(strand == -1 ~ "-",
+                             strand == 1 ~ "+"), 
+            phase=".",
+            group = paste0('gene_id "', ensembl_gene_id, '"; ', 'transcript_id "', ensembl_transcript_id, '"; ', ' gene_name "', external_gene_name, '";')) %>% 
+  arrange(chr, start, end)
+write.table(cds_regions, file.path(OUTPUT, "cds_regions.gtf"), col.names = F, row.names = F, quote = F, sep = "\t")
+utr5_annotation <- filtered_genes_ens %>% 
+  filter(!is.na(`5_utr_start`) & !is.na(`5_utr_end`)) %>% 
+  transmute(chr = chromosome_name, source="protein_coding", method="UTR5", start=`5_utr_start`, end=`5_utr_end`, score=".", 
+            strand=case_when(strand == -1 ~ "-",
+                             strand == 1 ~ "+"), 
+            phase=".",
+            group = paste0('gene_id "', ensembl_gene_id, '"; ', 'transcript_id "', ensembl_transcript_id, '"; ', ' gene_name "', external_gene_name, '";')) %>% 
+  arrange(chr, start, end)
+write.table(utr5_annotation,file.path(OUTPUT, "utr5_annotation.gtf"), col.names = F, row.names = F, quote = F, sep = "\t")
+utr3_annotation <- filtered_genes_ens %>% 
+  filter(!is.na(`3_utr_start`) & !is.na(`3_utr_end`)) %>% 
+  transmute(chr = chromosome_name, source="protein_coding", method="UTR3", start=`3_utr_start`, end=`3_utr_end`, score=".", 
+            strand=case_when(strand == -1 ~ "-",
+                             strand == 1 ~ "+"), 
+            phase=".",
+            group = paste0('gene_id "', ensembl_gene_id, '"; ', 'transcript_id "', ensembl_transcript_id, '"; ', ' gene_name "', external_gene_name, '";'))
+write.table(utr3_annotation, file.path(OUTPUT, "utr3_annotation.gtf"), col.names = F, row.names = F, quote = F, sep = "\t")
+```
+
+#### Removed the regions overlapped with CDS, and removed the regions overlapped with repeats, then use htseq-count to count reads within 3' or 5'
+
+> download appropriate repeat masker track in GTF format from UCSC and then edit the chromosome names (by removing "chr") to be consist with Ensembl
+e.g. for hg19: hg19RepMasker_removed_chr.gtf
+
+> generate cds GTF, utr3 GTF and utr5 GTF. Use bedtools subtract to removed overlapped regions for utr3 and utr5
+* bedtools subtract -a utr3_annotation.gtf -b cds_regions.gtf > utr3_annotation_removed_cds.gtf
+* bedtools subtract -a utr3_annotation_removed_cds.gtf -b hg19RepMasker_removed_chr.gtf > utr3_annotation_cleaned.gtf
+* bedtools subtract -a utr5_annotation.gtf -b cds_regions.gtf > utr5_annotation_removed_cds.gtf
+* bedtools subtract -a utr5_annotation_removed_cds.gtf -b hg19RepMasker_removed_chr.gtf > utr5_annotation_cleaned.gtf
+
+> Use htseq-count or featureCount to count reads in utr3, utr5 with the cleaned annotation file with strict mode
+Download the htseq-count result folders to OUTPUT, name the folder as htseq_count_utr3_strict and htseq_count_utr5_strict
+
+
+### Get P site information
+
+> On HTCF, copy Transcriptome alignment BAM files to a folder transcriptome_bams. Rename the filenames to sample names
+* SK222_Aligned.toTranscriptome.out.bam -> M_0_rf.bam
+* SK391_Aligned.toTranscriptome.out.bam -> M_24_rf.bam
+* SK393_Aligned.toTranscriptome.out.bam -> GM_0_rf.bam
+* SK394_Aligned.toTranscriptome.out.bam -> GM_24_rf.bam
+
+
+```{r}
+library(riboWaltz)
+require(riboWaltz)
+if (!file.exists(file.path(OUTPUT, "objs", "riboWaltz.RData"))) {
+  annotation <- create_annotation(gtfpath = "/path/to/annotation/file/chlSab2.ncbiRefSeq.gtf")
+  reads_list <- bamtolist(bamfolder = "/path/to/transcriptome_bams", annotation = annotation)
+  reads_list_filter <- length_filter(data = reads_list, length_filter_mode = "custom", length_filter_vector = 25:33)
+  psite_offset <- psite(reads_list_filter, flanking = 6, extremity = "auto")
+  reads_psite_list <- psite_info(reads_list_filter, psite_offset)
+  save(reads_list, reads_list_filter, annotation, psite_offset, reads_psite_list, file = "exp1_results/objs/riboWaltz.RData")
+}
+load(file.path(OUTPUT, "objs", "riboWaltz.RData"))
+```
+### P-site frames
+```{r}
+for (sample in SAMPLES) {
+  example_frames <- frame_psite(reads_psite_list,sample = paste0(sample, "_rf"), region = "all")
+  pt <- example_frames[["plot"]] +
+    labs(title = sample)
+  if (save_figs) ggsave(filename = paste0(OUTPUT, "/reports", "/figs/", sample, "_rf_frame_psite.png"), plot = pt)
+  print(pt)
+}
+```
+
+### P-site frames - Heatmap
+```{r}
+example_frames_heat <- frame_psite_length(reads_psite_list, region = "all")
+                                          
+pt <- example_frames_heat[["plot"]]
+pt <- pt + theme(strip.text.y = element_text(size=10))
+if (save_figs) ggsave(filename = paste0(OUTPUT, "/reports", "/figs/", "frame_psite_heatmap.pdf"), plot = pt)
+print(pt)
+```
+
+### P-site metaprofile
+```{r}
+for (sample in SAMPLES) {
+  example_metaprofile <- metaprofile_psite(reads_psite_list, annotation, sample = paste0(sample, "_rf"), utr5l = 25, cdsl =50, utr3l = 25, plot_title = "sample.transcript")
+  pt <- example_metaprofile[[paste0("plot_",sample, "_rf")]]
+  pt <- pt + theme(plot.title = element_text(size = 20), strip.text.x = element_text(size=15))
+  if (save_figs) ggsave(file.path(file.path(OUTPUT, "reports", "figs"), paste0(sample, "_rf_metaprofile_psite.png")), plot = pt, width = 10, height = 6)
+  print(pt)
+  
+}
+```
