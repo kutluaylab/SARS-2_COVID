@@ -1,9 +1,9 @@
 library(VennDiagram)
 
 
-setwd("C:/Users/NLEE/Desktop/mbio_venndiagram/")
+setwd("/path/to/DEgenes")
 
-outdir <- "C:/Users/NLEE/Desktop/mbio_venndiagram/outputs/"
+outdir <- "/path/to/output/folder"
 dir.create(outdir)
 
 samples <- c("ribo_1","ribo_2","ribo_3","ribo_4",
@@ -12,7 +12,10 @@ samples <- c("ribo_1","ribo_2","ribo_3","ribo_4",
 readAndFilter <- function(species, expr, tp) {
   if (species == "vero") time <- c("2hpi","6hpi","12hpi","24hpi")
   else if (species == "hbec") time <- c("24hpi", "48hpi", "72hpi", "96hpi")
-  else (print("Wrong species!"))
+  else {
+    print("Wrong species!")
+    exit()
+  }
   
   fn <- paste(expr,species,time[tp],"diffexgenes","full", sep="_")
   # print(fn)
